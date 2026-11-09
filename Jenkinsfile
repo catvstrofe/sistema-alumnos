@@ -1,69 +1,54 @@
-// Jenkinsfile - Pipeline de "Sistema Alumnos" (OCY1102)
-//
-// Esta es la versión BASE: solo compila y prueba.
-// En la guía irás pegando etapas en los marcadores  >>> [ETIQUETA]  de más abajo.
 pipeline {
     agent any
 
-    options {
-        timestamps()
-        timeout(time: 30, unit: 'MINUTES')
-        disableConcurrentBuilds()
-    }
-
-    // >>> [A-TRIGGER] (Parte A, paso A4): aquí va el bloque "triggers"
-
     environment {
-        // pipenv crea el entorno virtual (.venv) dentro del workspace del job
-        PIPENV_VENV_IN_PROJECT    = '1'
-        PIPENV_IGNORE_VIRTUALENVS = '1'
-        PIPENV_NOSPIN             = '1'
+        // Obtiene la versión desde el TAG de Git si existe, si no, usa el número de build
+        APP_VERSION = "${env.TAG_NAME ? env.TAG_NAME : '1.0.' + env.BUILD_NUMBER}"
+        RELEASE_DIR = "release-${env.APP_VERSION}"
     }
 
     stages {
-        stage('Build') {
+        stage('Checkout') {
             steps {
-                script {
-                    // Versión = 1.0.<nº de build>+<commit corto>. Sirve para la trazabilidad (Parte B)
-                    def sha = sh(returnStdout: true, script: 'git rev-parse --short HEAD').trim()
-                    env.GIT_SHA     = sha
-                    env.APP_VERSION = "1.0.${env.BUILD_NUMBER}+${sha}"
-                }
-                echo "Versión de este build: ${env.APP_VERSION}"
-                // Cada build parte limpio: sin reportes viejos y con un entorno virtual nuevo (reproducible)
-                sh 'rm -rf .venv reports && mkdir -p reports'
-                // --deploy: falla si Pipfile.lock no coincide con Pipfile (evita instalaciones "a ciegas")
-                sh 'pipenv install --dev --deploy'
-                sh 'pipenv run python -m compileall -q app.py'
+                checkout scm
             }
         }
 
-        stage('Test') {
+        stage('Install Dependencies') {
             steps {
-                sh 'pipenv run pytest --junitxml=reports/junit.xml'
-            }
-            post {
-                always {
-                    junit allowEmptyResults: true, testResults: 'reports/junit.xml'
-                }
+                sh 'pipenv install -r requirements.txt'
+                sh 'pipenv install --dev pytest'
             }
         }
 
-        // >>> [A-ETAPAS] (Parte A, paso A1): aquí van las etapas "Analyze" y "Dependency Management"
+        stage('Run Tests') {
+            steps {
+                sh 'pipenv run pytest'
+            }
+        }
 
-        // >>> [B-DOCS] (Parte B, paso B3): aquí va la etapa "Generate Documentation"
+        stage('Generate Documentation') {
+            steps {
+                sh 'mkdir -p reports'
+                sh 'APP_VERSION=${APP_VERSION} doxygen Doxyfile'
+            }
+        }
 
-        // >>> [B-VERSION] (Parte B, paso B4): aquí va la etapa "Version Control"
-
-        // >>> [B-DEPLOY] (Parte B, paso B5): aquí va la etapa "Deploy"
+        stage('Package Release') {
+            steps {
+                sh '''
+                    mkdir -p ${RELEASE_DIR}
+                    cp app.py Doxyfile Pipfile Pipfile.lock ${RELEASE_DIR}/
+                    cp -r reports ${RELEASE_DIR}/ 2>/dev/null || true
+                    tar -czvf sistema-alumnos-${APP_VERSION}.tar.gz ${RELEASE_DIR}
+                '''
+            }
+        }
     }
 
     post {
         always {
-            archiveArtifacts artifacts: 'reports/**', allowEmptyArchive: true
+            archiveArtifacts artifacts: 'reports/doxygen_warnings.log, *.tar.gz', allowEmptyArchive: true
         }
-        // >>> [A-POST] (Parte A, paso A4): aquí van las alertas "unstable" y "failure"
     }
 }
-
-// >>> [A-FUNCION] (Parte A, paso A4): aquí va la función notificar()
